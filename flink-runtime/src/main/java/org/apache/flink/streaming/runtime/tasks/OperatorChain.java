@@ -21,6 +21,7 @@ package org.apache.flink.streaming.runtime.tasks;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.metrics.groups.OperatorMetricGroup;
@@ -43,6 +44,7 @@ import org.apache.flink.runtime.operators.coordination.AcknowledgeCheckpointEven
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.operators.coordination.OperatorEventDispatcher;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
+import org.apache.flink.runtime.sampling.SamplingConfig;
 import org.apache.flink.runtime.state.ChannelStateHelper;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.SnapshotResult;
@@ -62,6 +64,7 @@ import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactoryUtil;
 import org.apache.flink.streaming.api.operators.StreamTaskStateInitializer;
 import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
+import org.apache.flink.streaming.runtime.io.SamplingRecordWriterOutput;
 import org.apache.flink.streaming.runtime.io.StreamTaskSourceInput;
 import org.apache.flink.streaming.runtime.operators.sink.SinkWriterOperatorFactory;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -552,6 +555,22 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
             outSerializer =
                     upStreamConfig.getTypeSerializerOut(
                             taskEnvironment.getUserCodeClassLoader().asClassLoader());
+        }
+
+        if (taskEnvironment
+                .getTaskManagerInfo()
+                .getConfiguration()
+                .get(RestOptions.ENABLE_DATA_SAMPLING)) {
+            SamplingConfig samplingConfig =
+                    SamplingConfig.fromConfiguration(
+                            taskEnvironment.getTaskManagerInfo().getConfiguration());
+            return closer.register(
+                    new SamplingRecordWriterOutput<OUT>(
+                            recordWriter,
+                            outSerializer,
+                            sideOutputTag,
+                            streamOutput.supportsUnalignedCheckpoints(),
+                            samplingConfig));
         }
 
         return closer.register(

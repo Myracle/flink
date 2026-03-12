@@ -69,6 +69,11 @@ import org.apache.flink.runtime.jobgraph.tasks.TaskInvokable;
 import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
+import org.apache.flink.runtime.sampling.DataSampleableTask;
+import org.apache.flink.runtime.sampling.SampleStatus;
+import org.apache.flink.runtime.sampling.SampledRecord;
+import org.apache.flink.runtime.sampling.SamplingRoundResult;
+import org.apache.flink.runtime.sampling.SamplingRoundState;
 import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.CheckpointStorageAccess;
 import org.apache.flink.runtime.state.CheckpointStorageLoader;
@@ -91,6 +96,7 @@ import org.apache.flink.streaming.api.operators.StreamTaskStateInitializer;
 import org.apache.flink.streaming.api.operators.StreamTaskStateInitializerImpl;
 import org.apache.flink.streaming.runtime.io.DataInputStatus;
 import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
+import org.apache.flink.streaming.runtime.io.SamplingRecordWriterOutput;
 import org.apache.flink.streaming.runtime.io.StreamInputProcessor;
 import org.apache.flink.streaming.runtime.io.checkpointing.BarrierAlignmentUtil;
 import org.apache.flink.streaming.runtime.io.checkpointing.CheckpointBarrierHandler;
@@ -129,6 +135,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -204,7 +211,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 CheckpointableTask,
                 CoordinatedTask,
                 AsyncExceptionHandler,
-                ContainingTaskDetails {
+                ContainingTaskDetails,
+                DataSampleableTask {
 
     /** The thread group that holds all trigger timer threads. */
     public static final ThreadGroup TRIGGER_THREAD_GROUP = new ThreadGroup("Triggers");
@@ -286,6 +294,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
     /** Flags indicating the finished method of all the operators are called. */
     private boolean finishedOperators;
+
+    /** Current state of data sampling on this task. */
+    private volatile SamplingRoundState samplingState = SamplingRoundState.IDLE;
 
     private boolean closedOperators;
 
@@ -1714,6 +1725,78 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             // only fail if the task is still in restoring or running
             asyncExceptionHandler.handleAsyncException(message, exception);
         }
+    }
+
+    // ------------------------------------------------------------------------
+    //  Data Sampling
+    // ------------------------------------------------------------------------
+
+    @Override
+    public CompletableFuture<SamplingRoundResult> requestDataSamples(
+            int roundId, Duration samplingWindow, int maxBufferCapacity) {
+        CompletableFuture<SamplingRoundResult> resultFuture = new CompletableFuture<>();
+
+        if (samplingState == SamplingRoundState.SAMPLING) {
+            resultFuture.complete(SamplingRoundResult.failed(roundId, SampleStatus.FAILED));
+            return resultFuture;
+        }
+
+        // Step 1: startRound on mailbox thread (same thread as collect())
+        mainMailboxExecutor.execute(
+                () -> {
+                    samplingState = SamplingRoundState.SAMPLING;
+                    for (RecordWriterOutput<?> output : operatorChain.getStreamOutputs()) {
+                        if (output instanceof SamplingRecordWriterOutput) {
+                            ((SamplingRecordWriterOutput<?>) output)
+                                    .startRound(roundId, maxBufferCapacity);
+                        }
+                    }
+                },
+                "Start data sampling round " + roundId);
+
+        // Step 2: Schedule collection after sampling window
+        systemTimerService.registerTimer(
+                systemTimerService.getCurrentProcessingTime() + samplingWindow.toMillis(),
+                timestamp ->
+                        mainMailboxExecutor.execute(
+                                () -> {
+                                    List<SampledRecord> allRecords = new ArrayList<>();
+                                    int totalDroppedContention = 0;
+                                    int totalDroppedRateLimit = 0;
+                                    for (RecordWriterOutput<?> output :
+                                            operatorChain.getStreamOutputs()) {
+                                        if (output instanceof SamplingRecordWriterOutput) {
+                                            SamplingRoundResult partial =
+                                                    ((SamplingRecordWriterOutput<?>) output)
+                                                            .completeRoundAndCollect(roundId);
+                                            allRecords.addAll(partial.getRecords());
+                                            totalDroppedContention +=
+                                                    partial.getDroppedByContention();
+                                            totalDroppedRateLimit +=
+                                                    partial.getDroppedByRateLimit();
+                                        }
+                                    }
+                                    samplingState = SamplingRoundState.IDLE;
+                                    SampleStatus status =
+                                            allRecords.isEmpty()
+                                                    ? SampleStatus.NO_DATA
+                                                    : SampleStatus.COMPLETE;
+                                    resultFuture.complete(
+                                            new SamplingRoundResult(
+                                                    roundId,
+                                                    allRecords,
+                                                    totalDroppedContention,
+                                                    totalDroppedRateLimit,
+                                                    status));
+                                },
+                                "Complete data sampling round " + roundId));
+
+        return resultFuture;
+    }
+
+    @Override
+    public SamplingRoundState getSamplingState() {
+        return samplingState;
     }
 
     // ------------------------------------------------------------------------

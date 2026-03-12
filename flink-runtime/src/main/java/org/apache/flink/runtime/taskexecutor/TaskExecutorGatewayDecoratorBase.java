@@ -40,6 +40,8 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.rest.messages.LogInfo;
 import org.apache.flink.runtime.rest.messages.ProfilingInfo;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
+import org.apache.flink.runtime.sampling.DataSampleRequest;
+import org.apache.flink.runtime.sampling.TaskDataSampleResponse;
 import org.apache.flink.runtime.webmonitor.threadinfo.ThreadInfoSamplesRequest;
 import org.apache.flink.types.SerializableOptional;
 import org.apache.flink.util.SerializedValue;
@@ -263,5 +265,13 @@ public class TaskExecutorGatewayDecoratorBase implements TaskExecutorGateway {
             Duration timeout) {
         return originalGateway.requestThreadInfoSamples(
                 taskExecutionAttemptIds, requestParams, timeout);
+    }
+
+    @Override
+    public CompletableFuture<TaskDataSampleResponse> requestDataSamples(
+            Collection<ExecutionAttemptID> taskExecutionAttemptIds,
+            DataSampleRequest request,
+            Duration timeout) {
+        return originalGateway.requestDataSamples(taskExecutionAttemptIds, request, timeout);
     }
 }

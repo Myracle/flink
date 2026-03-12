@@ -1,100 +1,59 @@
-# CLAUDE.md
+# CLAUDE.md - Flink Data Sampling FLIP Development
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project Context
+This is the Apache Flink open-source project. We are developing FLIP-XXX: Runtime Data Sampling.
+The complete design document is at: ./FLIP-data-sample.md
+MUST read this file before any implementation work.
 
-## Project Overview
-
-Apache Flink — open source stream processing framework. Version 2.3-SNAPSHOT. Java 11/17/21 supported; default source is Java 11, default target is Java 17. Uses Maven (mvnw wrapper, requires ≥3.8.6).
+## Key Architecture Reference
+- FlameGraph implementation (our architecture reference pattern):
+    - REST Handler: flink-runtime/src/main/java/org/apache/flink/runtime/rest/handler/job/JobVertexFlameGraphHandler.java
+    - Tracker: flink-runtime/src/main/java/org/apache/flink/runtime/webmonitor/stats/VertexThreadInfoTracker.java
+    - Coordinator: flink-runtime/src/main/java/org/apache/flink/runtime/webmonitor/stats/TaskStatsRequestCoordinator.java
+    - TM-side Service: flink-runtime/src/main/java/org/apache/flink/runtime/taskexecutor/ThreadInfoSampleService.java
+- Output pattern reference:
+    - RecordWriterOutput: flink-streaming-java/src/main/java/org/apache/flink/streaming/runtime/io/RecordWriterOutput.java
+    - CountingOutput: flink-streaming-java/src/main/java/org/apache/flink/streaming/api/operators/CountingOutput.java
+    - OperatorChain: flink-streaming-java/src/main/java/org/apache/flink/streaming/runtime/tasks/OperatorChain.java
 
 ## Build Commands
+- Full build (skip tests): `mvn clean install -DskipTests -Dfast`
+- Build specific module: `mvn clean install -DskipTests -pl flink-runtime`
+- Run specific test: `mvn test -pl flink-runtime -Dtest=TestClassName`
+- Run single test method: `mvn test -pl flink-runtime -Dtest=TestClassName#methodName`
+- Checkstyle: `mvn checkstyle:check -pl flink-runtime`
 
-```bash
-# Fast build (skip tests and QA checks)
-./mvnw clean package -DskipTests -Dfast
+## Coding Style & Conventions
+- Follow Apache Flink coding guidelines: https://flink.apache.org/how-to-contribute/code-style-and-quality-preamble/
+- Use `@Internal` annotation for all new classes (this FLIP introduces no public API)
+- All new public methods must have Javadoc
+- Use `javax.annotation.Nullable` for nullable fields
+- Follow existing naming patterns (e.g., `XxxHandler`, `XxxTracker`, `XxxCoordinator`)
+- Imports: static imports last, no wildcard imports
+- Line width: 100 characters max
+- Use `Preconditions.checkArgument()` / `checkNotNull()` for parameter validation
+- Tab: 4 spaces (Flink standard)
 
-# Build specific module (with dependencies)
-./mvnw clean package -DskipTests -Dfast -pl flink-runtime -am
+## Git Conventions
+- Branch naming: feature/FLINK-XXXXX-data-sampling-<component>
+- Commit message format: [FLINK-XXXXX][runtime] Add SamplingRecordWriterOutput for data sampling
 
-# Compile only (useful for IDE development)
-./mvnw test-compile -Dflink.markBundledAsOptional=false -Dfast
+## Important Patterns to Follow
+- When implementing REST handler, follow JobVertexFlameGraphHandler pattern exactly
+- When implementing Tracker, follow VertexThreadInfoTracker pattern
+- Configuration options go in RestOptions.java, following rest.flamegraph.* naming pattern
+- All serializable classes must have serialVersionUID
+- Thread safety: volatile for cross-thread flags, ReentrantLock for guarded sections
 
-# Code formatting check / apply
-./mvnw spotless:check
-./mvnw spotless:apply
+## Testing Patterns
+- Unit tests in same module under src/test/java
+- Integration tests use MiniCluster: see FlameGraph-related tests for examples
+- Use `@ExtendWith(TestLoggerExtension.class)` for test classes
+- Mock with Mockito, assertions with AssertJ
 
-# Run single test class
-./mvnw test -pl flink-core -Dtest=ConfigurationTest
-
-# Run single test method
-./mvnw test -pl flink-core -Dtest=ConfigurationTest#testGetString
-
-# Run integration tests (convention: *ITCase suffix)
-./mvnw verify -pl flink-tests -Dtest=SomeITCase -DfailIfNoTests=false
-
-# Run end-to-end tests
-flink-end-to-end-tests/run-single-test.sh test-scripts/test_batch_wordcount.sh
-```
-
-## Code Style
-
-- **Formatter**: google-java-format (AOSP style) via Spotless. Max line length: 100.
-- **Scala**: scalafmt 3.4.3, max column 100.
-- **Checkstyle**: config at `tools/maven/checkstyle.xml` (v10.18.2). Suppressions at `tools/maven/suppressions.xml`.
-- **No star imports**. No `org.mockito` or `org.powermock` in production code.
-- **Disallowed imports**: `org.apache.commons.lang` (use `commons-lang3`), `org.codehaus.jackson` (use shaded jackson).
-- **License**: All source files require Apache 2.0 header (managed by Spotless/RAT).
-- **EditorConfig**: `.editorconfig` — UTF-8, LF line endings, 4-space indent for Java/Python.
-
-## Architecture
-
-### Dependency Hierarchy (bottom-up)
-
-```
-flink-annotations / flink-metrics-core
-        └── flink-core-api  ◄── flink-datastream-api
-                └── flink-core
-              ┌─────┴──────────────┐
-         flink-rpc          flink-table-common
-              └── flink-runtime    flink-table-planner
-                    └── flink-streaming-java
-                          └── flink-clients
-                        ┌───────┴────────┐
-                   flink-yarn     flink-kubernetes
-```
-
-### Core Modules
-
-- `flink-core-api` / `flink-core` — Configuration (`ConfigOption<T>`), type system, filesystem abstraction, memory management, plugin system, serialization
-- `flink-rpc` — 3 sub-modules: `rpc-core` (interfaces) → `rpc-akka` (Akka impl) → `rpc-akka-loader` (classloader isolation)
-- `flink-runtime` — JobManager (scheduling, failure recovery), TaskManager (execution), ResourceManager (resource allocation), Dispatcher (job submission), shuffle, checkpointing
-- `flink-streaming-java` — DataStream API, operators, windowing, StreamGraph construction
-- `flink-table` — 15+ sub-modules: `table-common` (types, UDF) → `sql-parser` (Calcite SQL) → `table-planner` (optimizer, codegen) → `table-runtime` (execution) → `sql-gateway` / `sql-client`
-- `flink-connectors` — `connector-base`, `connector-files`, `connector-datagen`. Most connectors externalized to separate repos (flink-connector-kafka, etc.)
-- `flink-state-backends` — `rocksdb`, `forst`, `changelog`, `heap-spillable`, `common`
-
-### Key Patterns
-
-- **API stability annotations**: `@Public`, `@PublicEvolving`, `@Internal`, `@Experimental` control compatibility guarantees
-- **Shading**: Critical deps (Netty, Guava, Jackson, ASM, ZooKeeper) are shaded via `flink-shaded-*` to avoid classpath conflicts
-- **Classloader isolation**: Connectors/formats loaded via plugin system with parent-first or child-first strategy
-
-## Testing
-
-- **JUnit 5** (primary), JUnit 4 via vintage engine. AssertJ for assertions. Mockito for mocking.
-- **Unit tests** (`*Test`): `src/test/java` in each module. Fork count: 4, memory: 768m.
-- **Integration tests** (`*ITCase`): Fork count: 2, memory: 1536m.
-- **Architecture tests**: `flink-architecture-tests` module using ArchUnit.
-- **End-to-end tests**: `flink-end-to-end-tests` with shell scripts in `test-scripts/`.
-- **Testcontainers** (1.21.4): Docker-based integration tests.
-- Test exclusion tags: `FailsInGHAContainerWithRootUser`, `FailsWithAdaptiveScheduler`, `FailsOnJava11`.
-
-## Maven Profiles
-
-| Profile | Purpose |
-|---------|---------|
-| `fast` / `-Dfast` | Skip QA checks (spotless, checkstyle, RAT, javadoc) |
-| `java11-target` | Compile for Java 11 |
-| `java17-target` | Compile for Java 17 (default) |
-| `java21-target` | Compile for Java 21 |
-| `scala-2.12` | Scala 2.12 (active by default) |
-| `github-actions` | Exclude tests that fail in GitHub Actions containers |
+## Do NOT
+- Do NOT modify existing public API classes without explicit instruction
+- Do NOT add new dependencies without discussion
+- Do NOT change checkpointing/network stack code paths
+- Do NOT use System.out.println (use SLF4J logging)
+- Do NOT create files outside the designated module unless instructed

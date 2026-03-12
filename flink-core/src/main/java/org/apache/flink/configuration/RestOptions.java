@@ -286,6 +286,66 @@ public class RestOptions {
                     .defaultValue(100)
                     .withDescription("Maximum depth of stack traces used to create FlameGraphs.");
 
+    // --- Data Sampling ---
+
+    /** Enables the data sampling feature. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Boolean> ENABLE_DATA_SAMPLING =
+            key("rest.data-sampling.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("Enables the data sampling feature.");
+
+    /** Maximum number of records to sample per second per output. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Integer> DATA_SAMPLING_MAX_SAMPLE_RATE =
+            key("rest.data-sampling.max-sample-rate")
+                    .intType()
+                    .defaultValue(100)
+                    .withDescription("Maximum number of records to sample per second per output.");
+
+    /** Maximum length of a single sampled record's string representation. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Integer> DATA_SAMPLING_MAX_RECORD_LENGTH =
+            key("rest.data-sampling.max-record-length")
+                    .intType()
+                    .defaultValue(10000)
+                    .withDescription(
+                            "Maximum length of a single sampled record's string representation. Longer records will be truncated.");
+
+    /** Duration of the sampling window. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Duration> DATA_SAMPLING_SAMPLING_WINDOW =
+            key("rest.data-sampling.sampling-window")
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(3))
+                    .withDescription("Duration of the sampling window.");
+
+    /** Timeout for a data sampling request. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Duration> DATA_SAMPLING_TIMEOUT =
+            key("rest.data-sampling.timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(30))
+                    .withDescription("Timeout for a data sampling request.");
+
+    /** Time-to-live for cached data sampling results. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Duration> DATA_SAMPLING_CACHE_TTL =
+            key("rest.data-sampling.cache-ttl")
+                    .durationType()
+                    .defaultValue(Duration.ofMinutes(5))
+                    .withDescription("Time-to-live for cached data sampling results.");
+
+    /** Maximum total size of a data sampling response in bytes. */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Integer> DATA_SAMPLING_MAX_RESPONSE_BYTES =
+            key("rest.data-sampling.max-response-bytes")
+                    .intType()
+                    .defaultValue(10485760)
+                    .withDescription(
+                            "Maximum total size of a data sampling response in bytes (default 10MB).");
+
     @Documentation.Section(Documentation.Sections.EXPERT_REST)
     public static final ConfigOption<Duration> ASYNC_OPERATION_STORE_DURATION =
             key("rest.async.store-duration")

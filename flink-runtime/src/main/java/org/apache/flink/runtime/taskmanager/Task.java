@@ -77,6 +77,7 @@ import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.operators.coordination.TaskNotRunningException;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
+import org.apache.flink.runtime.sampling.DataSampleableTask;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.shuffle.ShuffleIOOwnerContext;
 import org.apache.flink.runtime.state.TaskStateManager;
@@ -510,6 +511,13 @@ public class Task
     @VisibleForTesting
     TaskInvokable getInvokable() {
         return invokable;
+    }
+
+    /** Returns a {@link DataSampleableTask} if the task supports data sampling, null otherwise. */
+    @Nullable
+    public DataSampleableTask getDataSampleableTask() {
+        TaskInvokable inv = invokable;
+        return inv instanceof DataSampleableTask ? (DataSampleableTask) inv : null;
     }
 
     @Nullable

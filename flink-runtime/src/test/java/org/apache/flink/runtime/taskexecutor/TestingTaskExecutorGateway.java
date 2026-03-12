@@ -41,6 +41,8 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.rest.messages.LogInfo;
 import org.apache.flink.runtime.rest.messages.ProfilingInfo;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
+import org.apache.flink.runtime.sampling.DataSampleRequest;
+import org.apache.flink.runtime.sampling.TaskDataSampleResponse;
 import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
 import org.apache.flink.runtime.webmonitor.threadinfo.ThreadInfoSamplesRequest;
 import org.apache.flink.types.SerializableOptional;
@@ -52,6 +54,7 @@ import org.apache.flink.util.function.TriFunction;
 
 import java.time.Duration;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
@@ -392,6 +395,15 @@ public class TestingTaskExecutorGateway implements TaskExecutorGateway {
             ThreadInfoSamplesRequest requestParams,
             Duration timeout) {
         return requestThreadInfoSamplesSupplier.get();
+    }
+
+    @Override
+    public CompletableFuture<TaskDataSampleResponse> requestDataSamples(
+            Collection<ExecutionAttemptID> taskExecutionAttemptIds,
+            DataSampleRequest request,
+            Duration timeout) {
+        return CompletableFuture.completedFuture(
+                new TaskDataSampleResponse(Collections.emptyMap()));
     }
 
     @Override

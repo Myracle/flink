@@ -98,6 +98,11 @@ import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcServiceUtils;
+import org.apache.flink.runtime.sampling.DataSampleRequest;
+import org.apache.flink.runtime.sampling.DataSampleableTask;
+import org.apache.flink.runtime.sampling.SampleStatus;
+import org.apache.flink.runtime.sampling.SamplingRoundResult;
+import org.apache.flink.runtime.sampling.TaskDataSampleResponse;
 import org.apache.flink.runtime.security.token.DelegationTokenReceiverRepository;
 import org.apache.flink.runtime.shuffle.DefaultPartitionWithMetrics;
 import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
@@ -649,6 +654,60 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                                 sampleableTasks, requestParams);
 
         return stackTracesFuture.thenApply(TaskThreadInfoResponse::new);
+    }
+
+    @Override
+    public CompletableFuture<TaskDataSampleResponse> requestDataSamples(
+            final Collection<ExecutionAttemptID> taskExecutionAttemptIds,
+            final DataSampleRequest request,
+            final Duration timeout) {
+
+        Map<ExecutionAttemptID, CompletableFuture<SamplingRoundResult>> futureMap =
+                CollectionUtil.newHashMapWithExpectedSize(taskExecutionAttemptIds.size());
+
+        for (ExecutionAttemptID executionAttemptId : taskExecutionAttemptIds) {
+            final Task task = taskSlotTable.getTask(executionAttemptId);
+            if (task == null) {
+                log.warn(
+                        "Cannot sample task {}. Task is not known to the task manager.",
+                        executionAttemptId);
+                continue;
+            }
+            DataSampleableTask sampleable = task.getDataSampleableTask();
+            if (sampleable != null) {
+                futureMap.put(
+                        executionAttemptId,
+                        sampleable.requestDataSamples(
+                                request.getRoundId(),
+                                request.getSamplingWindow(),
+                                request.getMaxBufferCapacity()));
+            } else {
+                log.warn("Task {} does not support data sampling.", executionAttemptId);
+            }
+        }
+
+        CompletableFuture<?>[] allFutures = futureMap.values().toArray(new CompletableFuture<?>[0]);
+
+        return CompletableFuture.allOf(allFutures)
+                .thenApply(
+                        ignored -> {
+                            Map<ExecutionAttemptID, SamplingRoundResult> results =
+                                    CollectionUtil.newHashMapWithExpectedSize(futureMap.size());
+                            for (Map.Entry<
+                                            ExecutionAttemptID,
+                                            CompletableFuture<SamplingRoundResult>>
+                                    entry : futureMap.entrySet()) {
+                                try {
+                                    results.put(entry.getKey(), entry.getValue().join());
+                                } catch (Exception e) {
+                                    results.put(
+                                            entry.getKey(),
+                                            SamplingRoundResult.failed(
+                                                    request.getRoundId(), SampleStatus.FAILED));
+                                }
+                            }
+                            return new TaskDataSampleResponse(results);
+                        });
     }
 
     // ----------------------------------------------------------------------
