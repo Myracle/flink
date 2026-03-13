@@ -153,6 +153,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.flink.configuration.TaskManagerOptions.BUFFER_DEBLOAT_PERIOD;
 import static org.apache.flink.runtime.metrics.MetricNames.GATE_RESTORE_DURATION;
@@ -296,7 +297,15 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     private boolean finishedOperators;
 
     /** Current state of data sampling on this task. */
-    private volatile SamplingRoundState samplingState = SamplingRoundState.IDLE;
+    private final AtomicReference<SamplingRoundState> samplingState =
+            new AtomicReference<>(SamplingRoundState.IDLE);
+
+    /**
+     * Tracks the pending sampling result future so it can be completed during cleanup if the task
+     * is cancelled while a sampling round is in progress.
+     */
+    @javax.annotation.Nullable
+    private volatile CompletableFuture<SamplingRoundResult> pendingSamplingResultFuture;
 
     private boolean closedOperators;
 
@@ -1124,6 +1133,14 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     }
 
     protected void cleanUpInternal() throws Exception {
+        // Clean up any in-progress sampling round to prevent state leak
+        CompletableFuture<SamplingRoundResult> pendingFuture = pendingSamplingResultFuture;
+        if (pendingFuture != null && !pendingFuture.isDone()) {
+            pendingFuture.complete(SamplingRoundResult.failed(-1, SampleStatus.FAILED));
+        }
+        samplingState.set(SamplingRoundState.IDLE);
+        pendingSamplingResultFuture = null;
+
         if (inputProcessor != null) {
             inputProcessor.close();
         }
@@ -1736,67 +1753,82 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             int roundId, Duration samplingWindow, int maxBufferCapacity) {
         CompletableFuture<SamplingRoundResult> resultFuture = new CompletableFuture<>();
 
-        if (samplingState == SamplingRoundState.SAMPLING) {
+        // Atomic state transition: only one round can be active at a time
+        if (!samplingState.compareAndSet(SamplingRoundState.IDLE, SamplingRoundState.SAMPLING)) {
             resultFuture.complete(SamplingRoundResult.failed(roundId, SampleStatus.FAILED));
             return resultFuture;
         }
 
-        // Step 1: startRound on mailbox thread (same thread as collect())
-        mainMailboxExecutor.execute(
-                () -> {
-                    samplingState = SamplingRoundState.SAMPLING;
-                    for (RecordWriterOutput<?> output : operatorChain.getStreamOutputs()) {
-                        if (output instanceof SamplingRecordWriterOutput) {
-                            ((SamplingRecordWriterOutput<?>) output)
-                                    .startRound(roundId, maxBufferCapacity);
-                        }
-                    }
-                },
-                "Start data sampling round " + roundId);
+        pendingSamplingResultFuture = resultFuture;
 
-        // Step 2: Schedule collection after sampling window
-        systemTimerService.registerTimer(
-                systemTimerService.getCurrentProcessingTime() + samplingWindow.toMillis(),
-                timestamp ->
-                        mainMailboxExecutor.execute(
-                                () -> {
-                                    List<SampledRecord> allRecords = new ArrayList<>();
-                                    int totalDroppedContention = 0;
-                                    int totalDroppedRateLimit = 0;
-                                    for (RecordWriterOutput<?> output :
-                                            operatorChain.getStreamOutputs()) {
-                                        if (output instanceof SamplingRecordWriterOutput) {
-                                            SamplingRoundResult partial =
-                                                    ((SamplingRecordWriterOutput<?>) output)
-                                                            .completeRoundAndCollect(roundId);
-                                            allRecords.addAll(partial.getRecords());
-                                            totalDroppedContention +=
-                                                    partial.getDroppedByContention();
-                                            totalDroppedRateLimit +=
-                                                    partial.getDroppedByRateLimit();
-                                        }
-                                    }
-                                    samplingState = SamplingRoundState.IDLE;
-                                    SampleStatus status =
-                                            allRecords.isEmpty()
-                                                    ? SampleStatus.NO_DATA
-                                                    : SampleStatus.COMPLETE;
-                                    resultFuture.complete(
-                                            new SamplingRoundResult(
-                                                    roundId,
-                                                    allRecords,
-                                                    totalDroppedContention,
-                                                    totalDroppedRateLimit,
-                                                    status));
-                                },
-                                "Complete data sampling round " + roundId));
+        // Start sampling and register timer on mailbox thread.
+        // Both must happen in the same mailbox action so that the timer window
+        // starts only after startRound() enables sampling — if the mailbox is
+        // backlogged, we don't want the timer to fire before sampling begins.
+        mainMailboxExecutor.execute(
+                () -> startSamplingRound(roundId, samplingWindow, maxBufferCapacity, resultFuture),
+                "Start data sampling round " + roundId);
 
         return resultFuture;
     }
 
+    private void startSamplingRound(
+            int roundId,
+            Duration samplingWindow,
+            int maxBufferCapacity,
+            CompletableFuture<SamplingRoundResult> resultFuture) {
+        for (RecordWriterOutput<?> output : operatorChain.getStreamOutputs()) {
+            if (output instanceof SamplingRecordWriterOutput) {
+                ((SamplingRecordWriterOutput<?>) output).startRound(roundId, maxBufferCapacity);
+            }
+        }
+
+        // Schedule collection after sampling window
+        systemTimerService.registerTimer(
+                systemTimerService.getCurrentProcessingTime() + samplingWindow.toMillis(),
+                timestamp -> {
+                    // Immediately disable (timer thread; samplingEnabled is volatile)
+                    for (RecordWriterOutput<?> output : operatorChain.getStreamOutputs()) {
+                        if (output instanceof SamplingRecordWriterOutput) {
+                            ((SamplingRecordWriterOutput<?>) output).disableSampling();
+                        }
+                    }
+                    // Collect results on mailbox thread
+                    mainMailboxExecutor.execute(
+                            () -> completeSamplingRound(roundId, resultFuture),
+                            "Complete data sampling round " + roundId);
+                });
+    }
+
+    private void completeSamplingRound(
+            int roundId, CompletableFuture<SamplingRoundResult> resultFuture) {
+        List<SampledRecord> allRecords = new ArrayList<>();
+        int totalDroppedContention = 0;
+        int totalDroppedRateLimit = 0;
+        for (RecordWriterOutput<?> output : operatorChain.getStreamOutputs()) {
+            if (output instanceof SamplingRecordWriterOutput) {
+                SamplingRoundResult partial =
+                        ((SamplingRecordWriterOutput<?>) output).completeRoundAndCollect(roundId);
+                allRecords.addAll(partial.getRecords());
+                totalDroppedContention += partial.getDroppedByContention();
+                totalDroppedRateLimit += partial.getDroppedByRateLimit();
+            }
+        }
+        samplingState.set(SamplingRoundState.IDLE);
+        pendingSamplingResultFuture = null;
+        SampleStatus status = allRecords.isEmpty() ? SampleStatus.NO_DATA : SampleStatus.COMPLETE;
+        resultFuture.complete(
+                new SamplingRoundResult(
+                        roundId,
+                        allRecords,
+                        totalDroppedContention,
+                        totalDroppedRateLimit,
+                        status));
+    }
+
     @Override
     public SamplingRoundState getSamplingState() {
-        return samplingState;
+        return samplingState.get();
     }
 
     // ------------------------------------------------------------------------

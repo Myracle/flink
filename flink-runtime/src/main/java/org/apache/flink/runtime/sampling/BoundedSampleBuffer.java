@@ -23,18 +23,18 @@ import org.apache.flink.annotation.Internal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * A bounded buffer for collecting sampled records. Thread-safe with non-blocking writes via {@link
- * ReentrantLock#tryLock()} to avoid impacting the data processing hot path.
+ * A bounded buffer for collecting sampled records during a data sampling round.
+ *
+ * <p>Not thread-safe. All methods must be called from the same thread (the mailbox thread in
+ * Flink's streaming runtime).
  *
  * @param <T> the type of elements in the buffer
  */
 @Internal
 public class BoundedSampleBuffer<T> {
 
-    private final ReentrantLock lock = new ReentrantLock();
     private ArrayList<T> buffer;
     private int capacity;
 
@@ -44,55 +44,31 @@ public class BoundedSampleBuffer<T> {
     }
 
     /**
-     * Attempts to add an item to the buffer without blocking. Returns {@code false} if the lock is
-     * held by another thread or the buffer is full.
+     * Adds an item to the buffer if it is not full.
+     *
+     * @return {@code true} if the item was added, {@code false} if the buffer is at capacity
      */
     public boolean tryAdd(T item) {
-        if (!lock.tryLock()) {
+        if (buffer.size() >= capacity) {
             return false;
         }
-        try {
-            if (buffer.size() >= capacity) {
-                return false;
-            }
-            buffer.add(item);
-            return true;
-        } finally {
-            lock.unlock();
-        }
+        buffer.add(item);
+        return true;
     }
 
-    /** Drains all items from the buffer and clears it. Blocks until the lock is acquired. */
+    /** Drains all items from the buffer and returns them as an unmodifiable list. */
     public List<T> drainAndClear() {
-        lock.lock();
-        try {
-            if (buffer.isEmpty()) {
-                return Collections.emptyList();
-            }
-            List<T> result = Collections.unmodifiableList(buffer);
-            buffer = new ArrayList<>(capacity);
-            return result;
-        } finally {
-            lock.unlock();
+        if (buffer.isEmpty()) {
+            return Collections.emptyList();
         }
+        List<T> result = Collections.unmodifiableList(buffer);
+        buffer = new ArrayList<>(capacity);
+        return result;
     }
 
-    /** Resets the buffer with a new capacity. Takes the lock for safety. */
+    /** Resets the buffer with a new capacity, discarding any existing items. */
     public void reset(int newCapacity) {
-        lock.lock();
-        try {
-            this.capacity = newCapacity;
-            this.buffer = new ArrayList<>(newCapacity);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public int size() {
-        return buffer.size();
-    }
-
-    public boolean isFull() {
-        return buffer.size() >= capacity;
+        this.capacity = newCapacity;
+        this.buffer = new ArrayList<>(newCapacity);
     }
 }

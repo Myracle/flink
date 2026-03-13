@@ -70,6 +70,7 @@ import org.apache.flink.runtime.rest.handler.job.JobResourceRequirementsUpdateHa
 import org.apache.flink.runtime.rest.handler.job.JobStatusHandler;
 import org.apache.flink.runtime.rest.handler.job.JobVertexAccumulatorsHandler;
 import org.apache.flink.runtime.rest.handler.job.JobVertexBackPressureHandler;
+import org.apache.flink.runtime.rest.handler.job.JobVertexDataSampleHandler;
 import org.apache.flink.runtime.rest.handler.job.JobVertexDetailsHandler;
 import org.apache.flink.runtime.rest.handler.job.JobVertexFlameGraphHandler;
 import org.apache.flink.runtime.rest.handler.job.JobVertexTaskManagersHandler;
@@ -175,6 +176,9 @@ import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerStdoutFileH
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerThreadDumpHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersHeaders;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
+import org.apache.flink.runtime.sampling.DataSampleRequestCoordinator;
+import org.apache.flink.runtime.sampling.VertexDataSampleTracker;
+import org.apache.flink.runtime.sampling.VertexDataSampleTrackerBuilder;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.webmonitor.history.ApplicationJsonArchivist;
 import org.apache.flink.runtime.webmonitor.history.ArchivedJson;
@@ -301,6 +305,35 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
                 .setDelayBetweenSamples(clusterConfiguration.get(RestOptions.FLAMEGRAPH_DELAY))
                 .setMaxThreadInfoDepth(
                         clusterConfiguration.get(RestOptions.FLAMEGRAPH_STACK_TRACE_DEPTH))
+                .build();
+    }
+
+    private VertexDataSampleTracker initializeDataSampleTracker(ScheduledExecutorService executor) {
+        final Duration samplingWindow =
+                clusterConfiguration.get(RestOptions.DATA_SAMPLING_SAMPLING_WINDOW);
+        final Duration refreshInterval =
+                clusterConfiguration.get(RestOptions.DATA_SAMPLING_REFRESH_INTERVAL);
+        final int maxSampleRate =
+                clusterConfiguration.get(RestOptions.DATA_SAMPLING_MAX_SAMPLE_RATE);
+        final int maxBufferCapacity =
+                (int)
+                        Math.min(
+                                (long)
+                                        Math.ceil(
+                                                maxSampleRate * samplingWindow.toMillis() / 1000.0),
+                                1000);
+
+        final DataSampleRequestCoordinator coordinator =
+                new DataSampleRequestCoordinator(
+                        executor, clusterConfiguration.get(RestOptions.DATA_SAMPLING_TIMEOUT));
+
+        return VertexDataSampleTrackerBuilder.newBuilder(
+                        resourceManagerRetriever, executor, restConfiguration.getTimeout())
+                .setCoordinator(coordinator)
+                .setCleanUpInterval(refreshInterval.multipliedBy(5))
+                .setStatsRefreshInterval(refreshInterval)
+                .setSamplingWindow(samplingWindow)
+                .setMaxBufferCapacity(maxBufferCapacity)
                 .build();
     }
 
@@ -940,6 +973,29 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
                 Tuple2.of(
                         jobVertexFlameGraphHandler.getMessageHeaders(),
                         jobVertexFlameGraphHandler));
+
+        final AbstractRestHandler<?, ?, ?, ?> jobVertexDataSampleHandler;
+        if (clusterConfiguration.get(RestOptions.ENABLE_DATA_SAMPLING)) {
+            final Duration dataSamplingRefreshInterval =
+                    clusterConfiguration.get(RestOptions.DATA_SAMPLING_REFRESH_INTERVAL);
+            jobVertexDataSampleHandler =
+                    new JobVertexDataSampleHandler(
+                            leaderRetriever,
+                            timeout,
+                            responseHeaders,
+                            executionGraphCache,
+                            executor,
+                            initializeDataSampleTracker(executor),
+                            dataSamplingRefreshInterval);
+        } else {
+            jobVertexDataSampleHandler =
+                    JobVertexDataSampleHandler.disabledHandler(
+                            leaderRetriever, timeout, responseHeaders);
+        }
+        handlers.add(
+                Tuple2.of(
+                        jobVertexDataSampleHandler.getMessageHeaders(),
+                        jobVertexDataSampleHandler));
 
         handlers.add(
                 Tuple2.of(

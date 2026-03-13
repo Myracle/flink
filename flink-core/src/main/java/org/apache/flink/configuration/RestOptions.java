@@ -329,13 +329,20 @@ public class RestOptions {
                     .defaultValue(Duration.ofSeconds(30))
                     .withDescription("Timeout for a data sampling request.");
 
-    /** Time-to-live for cached data sampling results. */
+    /**
+     * Time after which cached sampling results are considered stale and a new sampling round is
+     * triggered. It can be specified using notation: "30 s", "1 m".
+     */
     @Documentation.Section(Documentation.Sections.EXPERT_REST)
-    public static final ConfigOption<Duration> DATA_SAMPLING_CACHE_TTL =
-            key("rest.data-sampling.cache-ttl")
+    public static final ConfigOption<Duration> DATA_SAMPLING_REFRESH_INTERVAL =
+            key("rest.data-sampling.refresh-interval")
                     .durationType()
-                    .defaultValue(Duration.ofMinutes(5))
-                    .withDescription("Time-to-live for cached data sampling results.");
+                    .defaultValue(Duration.ofSeconds(60))
+                    .withDescription(
+                            "Time after which cached sampling results are considered stale"
+                                    + " and a new sampling round is triggered."
+                                    + " It can be specified using notation:"
+                                    + " \"30 s\", \"1 m\".");
 
     /** Maximum total size of a data sampling response in bytes. */
     @Documentation.Section(Documentation.Sections.EXPERT_REST)
@@ -345,6 +352,21 @@ public class RestOptions {
                     .defaultValue(10485760)
                     .withDescription(
                             "Maximum total size of a data sampling response in bytes (default 10MB).");
+
+    /**
+     * Maximum milliseconds per second spent on toString() calls during data sampling. Protects
+     * against expensive toString() implementations blocking the data processing thread.
+     */
+    @Documentation.Section(Documentation.Sections.EXPERT_REST)
+    public static final ConfigOption<Integer> DATA_SAMPLING_TOSTRING_BUDGET_MS =
+            key("rest.data-sampling.tostring-budget-ms")
+                    .intType()
+                    .defaultValue(50)
+                    .withDescription(
+                            "Maximum milliseconds per second spent on toString() calls "
+                                    + "during data sampling. Protects against expensive "
+                                    + "toString() implementations blocking the data "
+                                    + "processing thread.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_REST)
     public static final ConfigOption<Duration> ASYNC_OPERATION_STORE_DURATION =

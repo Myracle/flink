@@ -686,25 +686,35 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             }
         }
 
-        CompletableFuture<?>[] allFutures = futureMap.values().toArray(new CompletableFuture<?>[0]);
+        // Wrap each future to handle individual failures gracefully.
+        // Without this, CompletableFuture.allOf() would fail entirely if any
+        // single subtask's future completes exceptionally, skipping thenApply().
+        Map<ExecutionAttemptID, CompletableFuture<SamplingRoundResult>> safeFutureMap =
+                CollectionUtil.newHashMapWithExpectedSize(futureMap.size());
+        for (Map.Entry<ExecutionAttemptID, CompletableFuture<SamplingRoundResult>> entry :
+                futureMap.entrySet()) {
+            safeFutureMap.put(
+                    entry.getKey(),
+                    entry.getValue()
+                            .exceptionally(
+                                    t ->
+                                            SamplingRoundResult.failed(
+                                                    request.getRoundId(), SampleStatus.FAILED)));
+        }
+
+        CompletableFuture<?>[] allFutures =
+                safeFutureMap.values().toArray(new CompletableFuture<?>[0]);
 
         return CompletableFuture.allOf(allFutures)
                 .thenApply(
                         ignored -> {
                             Map<ExecutionAttemptID, SamplingRoundResult> results =
-                                    CollectionUtil.newHashMapWithExpectedSize(futureMap.size());
+                                    CollectionUtil.newHashMapWithExpectedSize(safeFutureMap.size());
                             for (Map.Entry<
                                             ExecutionAttemptID,
                                             CompletableFuture<SamplingRoundResult>>
-                                    entry : futureMap.entrySet()) {
-                                try {
-                                    results.put(entry.getKey(), entry.getValue().join());
-                                } catch (Exception e) {
-                                    results.put(
-                                            entry.getKey(),
-                                            SamplingRoundResult.failed(
-                                                    request.getRoundId(), SampleStatus.FAILED));
-                                }
+                                    entry : safeFutureMap.entrySet()) {
+                                results.put(entry.getKey(), entry.getValue().join());
                             }
                             return new TaskDataSampleResponse(results);
                         });

@@ -24,6 +24,7 @@ import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
+import java.util.concurrent.TimeUnit;
 
 /** Immutable configuration for data sampling on a single task. */
 @Internal
@@ -34,21 +35,36 @@ public class SamplingConfig implements Serializable {
     private final int maxSampleRate;
     private final int maxRecordLength;
     private final long maxResponseBytes;
+    private final long toStringBudgetMs;
 
-    public SamplingConfig(int maxSampleRate, int maxRecordLength, long maxResponseBytes) {
-        Preconditions.checkArgument(maxSampleRate > 0, "maxSampleRate must be positive");
-        Preconditions.checkArgument(maxRecordLength > 0, "maxRecordLength must be positive");
-        Preconditions.checkArgument(maxResponseBytes > 0, "maxResponseBytes must be positive");
+    public SamplingConfig(
+            int maxSampleRate, int maxRecordLength, long maxResponseBytes, long toStringBudgetMs) {
+        Preconditions.checkArgument(
+                maxSampleRate >= 1 && maxSampleRate <= 10000,
+                "maxSampleRate must be in [1, 10000], was: %s",
+                maxSampleRate);
+        Preconditions.checkArgument(
+                maxRecordLength > 0, "maxRecordLength must be positive, was: %s", maxRecordLength);
+        Preconditions.checkArgument(
+                maxResponseBytes >= 1_048_576 && maxResponseBytes <= 52_428_800,
+                "maxResponseBytes must be in [1MB, 50MB], was: %s",
+                maxResponseBytes);
+        Preconditions.checkArgument(
+                toStringBudgetMs >= 1 && toStringBudgetMs <= 1000,
+                "toStringBudgetMs must be in [1, 1000], was: %s",
+                toStringBudgetMs);
         this.maxSampleRate = maxSampleRate;
         this.maxRecordLength = maxRecordLength;
         this.maxResponseBytes = maxResponseBytes;
+        this.toStringBudgetMs = toStringBudgetMs;
     }
 
     public static SamplingConfig fromConfiguration(Configuration configuration) {
         return new SamplingConfig(
                 configuration.get(RestOptions.DATA_SAMPLING_MAX_SAMPLE_RATE),
                 configuration.get(RestOptions.DATA_SAMPLING_MAX_RECORD_LENGTH),
-                configuration.get(RestOptions.DATA_SAMPLING_MAX_RESPONSE_BYTES));
+                configuration.get(RestOptions.DATA_SAMPLING_MAX_RESPONSE_BYTES),
+                configuration.get(RestOptions.DATA_SAMPLING_TOSTRING_BUDGET_MS));
     }
 
     public int getMaxSampleRate() {
@@ -61,5 +77,10 @@ public class SamplingConfig implements Serializable {
 
     public long getMaxResponseBytes() {
         return maxResponseBytes;
+    }
+
+    /** Returns the toString() time budget in nanoseconds. */
+    public long getToStringBudgetNanos() {
+        return TimeUnit.MILLISECONDS.toNanos(toStringBudgetMs);
     }
 }
